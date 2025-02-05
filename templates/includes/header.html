@@ -1,0 +1,64 @@
+<nav class="navbar navbar-expand navbar-light navbar-bg">
+	<a class="sidebar-toggle js-sidebar-toggle">
+		<i class="hamburger align-self-center"></i>
+	</a>
+
+	<div class="navbar-collapse collapse">
+		<div class="search-bar">
+			<form class="search-form d-flex align-items-center" method="POST" action="#">
+				<input type="text" name="query" placeholder="Search" title="Enter search keyword">
+				<button type="submit" title="Search"><i class="fa fa-search"></i></button>
+			</form>
+		</div>
+		<ul class="navbar-nav navbar-align">
+			<li class="nav-item dropdown">
+				<a class="nav-icon dropdown-toggle" href="#" id="alertsDropdown" data-bs-toggle="dropdown">
+					<div class="position-relative">
+						<i class="align-middle" data-feather="bell"></i>
+						<span class="indicator">4</span>
+					</div>
+				</a>
+				<div class="dropdown-menu dropdown-menu-lg dropdown-menu-end py-0" aria-labelledby="alertsDropdown">
+					<div class="dropdown-menu-header">
+						4 New Notifications
+					</div>
+					<!-- Notifications -->
+					<div class="list-group">
+						<a href="#" class="list-group-item">
+							<div class="row g-0 align-items-center">
+								<div class="col-2">
+									<i class="text-danger" data-feather="alert-circle"></i>
+								</div>
+								<div class="col-10">
+									<div class="text-dark">Update completed</div>
+									<div class="text-muted small mt-1">Restart server 12 to complete the update.</div>
+									<div class="text-muted small mt-1">30m ago</div>
+								</div>
+							</div>
+						</a>
+					</div>
+					<div class="dropdown-menu-footer">
+						<a href="#" class="text-muted">Show all notifications</a>
+					</div>
+				</div>
+			</li>
+			<li class="nav-item dropdown">
+				<a class="nav-link dropdown-toggle d-none d-sm-inline-block" href="#" data-bs-toggle="dropdown">
+					<img src="{{ url_for('static', filename='upload/' + user.profile_image if user.profile_image else 'img/avatars/avatar-4.jpg') }}" class="avatar img-fluid rounded me-1" alt="User Avatar" />
+					{% if current_user.is_authenticated %}
+                        Welcome, {{ current_user.firstname }}
+                    {% else %}
+                        <a href="{{ url_for('user_routes.admin_login') }}">Login</a>
+                    {% endif %}
+				</a>
+				<div class="dropdown-menu dropdown-menu-end">
+					<a class="dropdown-item" href="pages-profile.html"><i class="align-middle me-1" data-feather="user"></i> Profile</a>
+					<div class="dropdown-divider"></div>
+					<form method="POST" action="{{ url_for('user_routes.admin_logout') }}">
+						<button class="dropdown-item" type="submit"><i class="align-middle me-1" data-feather="log-out"></i> Logout</button>
+					</form>
+				</div>
+			</li>
+		</ul>
+	</div>
+</nav>

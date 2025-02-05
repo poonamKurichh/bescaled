@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Page Management</title>
+    <script src="https://cdn.tiny.cloud/1/no-api-key/tinymce/6/tinymce.min.js" referrerpolicy="origin"></script>
+</head>
+<body>
+<div>
+    <h1>Page Management</h1>
+    <form id="pageForm">
+        <label for="title">Page Title</label>
+        <input type="text" id="title" name="title" value="{{ page.title if page else '' }}" required /><br/><br/>
+
+        <label for="slug">Page Slug</label>
+        <input type="text" id="slug" name="slug" value="{{ page.slug if page else '' }}" required /><br/><br/>
+
+        <label for="content">Page Content</label>
+        <textarea id="content" name="content">{{ page.content if page else '' }}</textarea><br/><br/>
+
+        <input type="hidden" id="pageId" name="pageId" value="{{ page.id if page else '' }}" />
+
+        <button type="submit">Save Page</button>
+    </form>
+</div>
+<script>
+    // Initialize TinyMCE
+    tinymce.init({
+        selector: '#content',
+        plugins: 'advlist autolink lists link image charmap preview anchor searchreplace visualblocks code fullscreen insertdatetime media table paste code help wordcount',
+        toolbar: 'undo redo | formatselect | bold italic backcolor | alignleft aligncenter alignright alignjustify | bullist numlist outdent indent | removeformat | help',
+        height: 400
+    });
+
+    // Submit form
+    document.getElementById('pageForm').addEventListener('submit', async function (event) {
+        event.preventDefault();
+
+        const pageId = document.getElementById('pageId').value;
+        const title = document.getElementById('title').value;
+        const slug = document.getElementById('slug').value;
+        const content = tinyMCE.get('content').getContent();
+
+        const response = await fetch(`/api/pages${pageId ? '/' + pageId : ''}`, {
+            method: pageId ? 'PUT' : 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ title, slug, content }),
+        });
+
+        if (response.ok) {
+            alert('Page saved successfully!');
+        } else {
+            alert('Failed to save page.');
+        }
+    });
+</script>
+</body>
+</html>

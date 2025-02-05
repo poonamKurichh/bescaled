@@ -1,147 +1,89 @@
-from flask import Flask, render_template, redirect, url_for, current_app, request, flash
-from flask_login import LoginManager, login_required, current_user
-from models import db, User
-from flask_jwt_extended import JWTManager
-from itsdangerous import URLSafeTimedSerializer
-from config import CurrentConfig
-from flask_mail import Mail, Message
-from routes import register_blueprints  # Import blueprint registration
-from flask_migrate import Migrate
+from flask import Flask, render_template, redirect, url_for, session, g, flash
+from flask_jwt_extended import JWTManager  # ✅ Import JWT
+from flask_login import LoginManager, current_user
+from extensions import mail
+from dotenv import load_dotenv
 from flask_cors import CORS
-import smtplib
-from email.mime.text import MIMEText
+import os
+from routes import register_blueprints
+from functools import wraps
+from flask_migrate import Migrate
+from models import db  # ✅ Import SQLAlchemy & models
+from config import CurrentConfig  # ✅ Load dynamically selected config
 
-app = Flask(__name__)
-app.config.from_object(CurrentConfig)
+# Load .env values
+load_dotenv()
 
-
-CORS(app, resources={r"/*": {"origins": "http://localhost:3000"}})
-
-
-jwt = JWTManager(app)
-
-db.init_app(app)
-
-# Initialize extensions
-login_manager = LoginManager()
-login_manager.init_app(app)
-login_manager.login_view = "user_routes.admin_login"  # Redirect unauthorized users to login
-login_manager.session_protection = "strong"  # Ensure session security
-
-mail = Mail(app)  # ✅ Initialize Flask-Mail
-
-# Initialize Flask-Migrate
-migrate = Migrate(app, db)
-
-# Flask-Login User Loader
-@login_manager.user_loader
-def load_user(user_id):
-    with current_app.app_context():
-        return db.session.get(User, int(user_id))  # Corrected for SQLAlchemy 2.0
-
-# Register blueprints
-# Register all blueprints in one place
-register_blueprints(app)
+# ✅ Initialize JWT globally (but don't attach it to the app yet)
+jwt = JWTManager()
+login_manager = LoginManager()  # ✅ Initialize LoginManager globally
 
 
-# Admin-only route
-@app.context_processor
-def inject_user():
-    return {'user': current_user}
+def create_app():
+    app = Flask(__name__)
 
-@app.route("/")
-def home():
-    # Redirect based on user login status
-    if current_user.is_authenticated:
-      return redirect(url_for('user_routes.admin_dashboard'))
-    return redirect(url_for('user_routes.admin_login'))
-    #return render_template('admin_login.html')
+    # ✅ Load configurations
+    app.config.from_object(CurrentConfig)
 
-def send_email_fallback(to_email, subject, body):
-    msg = MIMEText(body)
-    msg["Subject"] = subject
-    msg["From"] = Config.MAIL_USERNAME
-    msg["To"] = to_email
+    # App Configurations
+    app.config['SECRET_KEY'] = os.getenv('SECRET_KEY')
+    app.config['MAIL_SERVER'] = os.getenv('MAIL_SERVER')
+    app.config['MAIL_PORT'] = int(os.getenv('MAIL_PORT', 587))
+    app.config['MAIL_USE_SSL'] = os.getenv('MAIL_USE_SSL') == 'True'
+    app.config['MAIL_USE_TLS'] = os.getenv('MAIL_USE_TLS') == 'True'
+    app.config['MAIL_USERNAME'] = os.getenv('MAIL_USERNAME')
+    app.config['MAIL_PASSWORD'] = os.getenv('MAIL_PASSWORD')
+    app.config['MAIL_DEFAULT_SENDER'] = os.getenv('MAIL_DEFAULT_SENDER')
+    app.config['UPLOAD_FOLDER'] = 'static/upload'
 
-    try:
-        with smtplib.SMTP(Config.MAIL_SERVER, Config.MAIL_PORT) as server:
-            server.starttls()
-            server.login(Config.MAIL_USERNAME, Config.MAIL_PASSWORD)
-            server.sendmail(Config.MAIL_USERNAME, [to_email], msg.as_string())
-        print("✅ Email sent successfully using smtplib!")
-    except Exception as e:
-        print("❌ Error sending email:", e)
+    # ✅ Configure Flask-JWT for React Frontend Authentication
+    app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY")  # Use environment variable
+    app.config["JWT_TOKEN_LOCATION"] = ["headers"]  # Ensure JWT is received via HTTP headers
+    app.config["JWT_ACCESS_TOKEN_EXPIRES"] = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRES", 3600))  # Token expiry (1 hour default)
+    app.config["JWT_REFRESH_TOKEN_EXPIRES"] = int(os.getenv("JWT_REFRESH_TOKEN_EXPIRES", 86400))  # Refresh token expiry (1 day default)
 
-# Utility function to generate a reset token
-def generate_reset_token(email):
-    serializer = URLSafeTimedSerializer(Config.SECRET_KEY)
-    return serializer.dumps(email, salt="password-reset-salt")
+    # ✅ Initialize Flask Extensions
+    mail.init_app(app)  # Flask-Mail
+    CORS(app, resources={r"/*": {"origins": "http://localhost:3000"}})  # Enable CORS for React
+    jwt.init_app(app)  # ✅ Properly initialize JWT here
+    db.init_app(app)  # ✅ Initialize SQLAlchemy
 
-# Utility function to verify the reset token
-def verify_reset_token(token, expiration=3600):  # 1-hour expiration
-    serializer = URLSafeTimedSerializer(Config.SECRET_KEY)
-    try:
-        email = serializer.loads(token, salt="password-reset-salt", max_age=expiration)
-        return email
-    finally:
-        return None
+    # ✅ Initialize Flask-Login
+    login_manager.init_app(app)  # ✅ Attach login manager to Flask app
+    login_manager.login_view = "user_routes.admin_login"  # ✅ Redirect unauthorized users
 
-@app.route('/forgot_password', methods=['GET', 'POST'])
-def forgot_password():
-    """Render the Forgot Password page and handle form submission."""
-    if request.method == 'POST':
-        email = request.form.get('email')
+    # Lazy-print the database URL only inside an app context
+    with app.app_context():
+        print(f"✅ Database URL: {app.config['SQLALCHEMY_DATABASE_URI']}")
 
-        # Check if the email exists in the database
-        user = User.query.filter_by(email=email).first()
-        if user:
-            # Generate password reset token
-            token = generate_reset_token(email)
+    # ✅ Register models before running migrations
+    with app.app_context():
+        from models.user import User, UserRoles  # ✅ Import here to avoid circular import
+        from models.menu import Menu, MenuItem
+        from models.page import Page
+        db.create_all()    # ✅ Create tables if they don't exist
 
-            # Create reset link
-            reset_url = url_for('reset_password', token=token, _external=True)
+    # ✅ Initialize Flask-Migrate
+    migrate = Migrate(app, db)
 
-            # Send email with reset link( for google smtp)
-            subject = "Password Reset Request"
-            body = f"Hello, click the link below to reset your password:\n{reset_url}\nThis link expires in 1 hour."
-            msg = Message(subject=subject, recipients=[email], body=body)
-            print("Attempting to send email...")
-            print(f"Mail Sender: {Config.MAIL_USERNAME}")  # Debugging
-            print(f"Mail Recipients: {[email]}")
-            print(f"Mail Body: {body}")
-            #mail.send(msg) #for gmail smtp
-            send_email_fallback(email, subject, body)
+    # Register Blueprints
+    register_blueprints(app)
 
-            flash("Password reset instructions have been sent to your email.", "info")
-        else:
-            flash("No account found with this email address.", "danger")
 
-        return redirect(url_for('forgot_password'))
+    @login_manager.user_loader
+    def load_user(user_id):
+        return User.query.get(int(user_id))  # ✅ Fetch user from DB using ID
 
-    return render_template('forgot_password.html')
+    # Admin-only route
+    @app.context_processor
+    def inject_user():
+        return {'user': current_user}
 
-@app.route('/reset_password/<token>', methods=['GET', 'POST'])
-def reset_password(token):
-    """Reset password route."""
-    email = verify_reset_token(token)
-    if not email:
-        flash('The reset link is invalid or has expired.', 'danger')
-        return redirect(url_for('forgot_password'))
+    @app.route("/")
+    def home():
+        """Redirect to login if authenticated, otherwise go to login page."""
+        if current_user.is_authenticated:  # ✅ Correct way to check if user is logged in
+            return redirect(url_for("user_routes.admin_dashboard"))
+        return redirect(url_for("user_routes.admin_login"))
 
-    if request.method == 'POST':
-        password = request.form.get('password')
-        user = User.query.filter_by(email=email).first()
-        if user:
-            user.set_password(password)
-            db.session.commit()
-            flash('Your password has been updated!', 'success')
-            return redirect(url_for('user_routes.admin_login'))
-
-    return render_template('reset_password.html', token=token)
-
-# Create tables
-with app.app_context():
-    db.create_all()
-
-if __name__ == '__main__':
-    app.run(host='127.0.0.1', port=5000, debug=True)
+    return app
