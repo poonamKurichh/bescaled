@@ -1,154 +1,222 @@
-from flask import Blueprint, jsonify, render_template, request, redirect, url_for, flash, current_app
+from flask import Blueprint, jsonify, render_template, request, redirect, url_for, flash, current_app, abort
 from flask_login import login_user, logout_user, login_required, current_user
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
-from flask_mail import Mail, Message
-from itsdangerous import URLSafeTimedSerializer
-from werkzeug.security import generate_password_hash
 from werkzeug.utils import secure_filename
-from models import db, User, UserRoles
-import uuid, os  # For generating unique file names
+from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadSignature
+from flask_mail import Message
 
+from config import CurrentConfig
+from models import db
+from models.user import User, UserRoles
+import os
+import uuid
+
+
+
+# Initialize Blueprint
 user_routes = Blueprint('user_routes', __name__)
-mail = Mail(current_app)  # Initialize Flask-Mail
+
+# Configurations for file uploads
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
+UPLOAD_FOLDER = 'static/upload'
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
+
+
+
+# ============================
+# Helper Functions
+# ============================
+
+def allowed_file(filename):
+    """Check if the file has an allowed extension."""
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+def validate_role(role, allowed_roles=['admin', 'manager']):
+    """Check if the role is valid."""
+    return role.lower() in allowed_roles
+
+
+def role_required(allowed_roles):
+    """Decorator to enforce role-based access control."""
+
+    def decorator(func):
+        from functools import wraps
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            if not current_user.is_authenticated or current_user.role not in allowed_roles:
+                flash("Access denied: Insufficient permissions.", "danger")
+                return redirect(url_for('user_routes.admin_login'))
+            return func(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
 
 # ============================
 # Admin Panel Routes
 # ============================
-
-
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
-UPLOAD_FOLDER = 'static/upload'
-current_app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-
-
-def allowed_file(filename):
-    """Check if file has an allowed extension."""
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
-
 
 @user_routes.route('/admin/login', methods=['GET', 'POST'])
 def admin_login():
     """Admin login route."""
     if request.method == 'POST':
         email = request.form.get('email')
+        email = email.strip()
         password = request.form.get('password')
+
         print(f"Email: {email}, Password: {password}")  # Debugging
+
         user = User.query.filter_by(email=email).first()
         # Debugging: Print user details
         print(f"Attempting login for: {email}")
         print(f"User found: {user}")
 
-        if user:
-            print(f"Stored Role: {user.role}, Entered Password: {password}")
-            print(f"Password Matches: {user.check_password(password)}")
-            print(f"Role Check: {user.role in ['admin', 'manager']}")
-
         if user and user.check_password(password) and user.role in ['admin', 'manager']:
-            login_user(user, remember=True)  # Ensure session persists
-
-            print(f"Logged in User: {current_user}")  # Debugging
-            print(f"Is Authenticated: {current_user.is_authenticated}")  # Debugging
+            login_user(user)
 
             flash("Logged in successfully!", "success")
+            current_app.logger.info(f"Admin {email} logged in.")
             return redirect(url_for('user_routes.admin_dashboard'))
 
         flash("Invalid credentials or insufficient permissions.", "danger")
+        current_app.logger.warning(f"Failed login attempt for: {email}")
         return redirect(url_for('user_routes.admin_login'))
 
-    return render_template('admin_login.html')  # Render login form
+    return render_template('pages/admin_login.html')
 
 
-
-
-
-"""
-@user_routes.route('/forgot_password', methods=['GET', 'POST'])
-def forgot_password():
-    #Render the Forgot Password page and handle form submission.
-    if request.method == 'POST':
-        email = request.form.get('email')
-
-        # Check if the email exists in the database
-        user = User.query.filter_by(email=email).first()
-        if user:
-            # Here, you can implement the logic for sending a password reset email
-
-            flash("Password reset instructions have been sent to your email.", "info")
-        else:
-            flash("No account found with this email address.", "danger")
-
-        return redirect(url_for('user_routes.forgot_password'))
-
-    # Render the Forgot Password page for GET requests
-    return render_template('forgot_password.html')
-"""
-
-
-@user_routes.route('/admin_register', methods=['GET', 'POST'])
+@user_routes.route('/admin/register', methods=['GET', 'POST'])
 def admin_register():
     """Admin registration route for creating new users."""
     if request.method == 'POST':
-        print('Admin registration form data:', request.form)
-
         firstname = request.form.get('firstname')
         lastname = request.form.get('lastname')
-        company = request.form.get('company')
         email = request.form.get('email')
         password = request.form.get('password')
-        role = request.form.get('role')  # Get role from form input
+        role = request.form.get('role')
 
-        print(f"New User: {firstname} {lastname}, Email: {email}, Role: {role}")
+        if not validate_role(role):
+            flash("Invalid role: Must be admin or manager.", "danger")
+            return redirect(url_for('user_routes.admin_register'))
 
-        # Validate if the email already exists
-        existing_user = User.query.filter_by(email=email).first()
-        print("Existing User:", existing_user)
-
-        if existing_user:
+        if User.query.filter_by(email=email).first():
             flash("Email already registered. Please log in.", "warning")
-            return redirect(url_for('user_routes.admin_login'))
-
-        # Validate role input
-        if role.lower() not in ['admin', 'manager']:
-            flash("Invalid role. Please select 'admin' or 'manager'.", "danger")
             return redirect(url_for('user_routes.admin_register'))
 
-        # Validate password
-        if not password:
-            flash("Password is required!", "danger")
-            return redirect(url_for('user_routes.admin_register'))
-
-        # Create a new user
         new_user = User(
-            firstname=firstname,
-            lastname=lastname,
-            email=email,
-            company=company,  # Add company information
-            role=role,  # Save the role from form input
-            contact_no=''  # Optional, can be updated later
+            firstname=firstname, lastname=lastname, email=email, role=role
         )
         new_user.set_password(password)
-
-        # Save to database
         try:
             db.session.add(new_user)
             db.session.commit()
-            print(f"New User: {firstname} {lastname}, Email: {email}, Role: {role}")
             flash(f"{role.capitalize()} account created successfully! Please log in.", "success")
+            current_app.logger.info(f"New {role} registered: {email}")
             return redirect(url_for('user_routes.admin_login'))
         except Exception as e:
             db.session.rollback()
-            import traceback
-            print("Database Error:", e)
-            print(traceback.format_exc())  # Prints full error traceback
-            flash("An error occurred while saving to the database. Please try again.", "danger")
+            current_app.logger.error(f"Error creating user: {e}")
+            flash("An error occurred during registration. Please try again.", "danger")
             return redirect(url_for('user_routes.admin_register'))
 
-    # Fetch roles from UserRoles table
-    roles = UserRoles.query.all()
-    return render_template('sign_up.html', roles=roles)
+    roles = UserRoles.query.all()  # Fetch roles dynamically if needed
+    print('user roles:', roles)
+    return render_template('pages/sign_up.html', roles=roles)
+
+#========================================
+# Forgot & Reset Password APIs for admin
+# =======================================
+
+@user_routes.route('/forgot_password', methods=['GET','POST'])
+def forgot_password():
+    """
+    Admin forgot password API to send a reset password email.
+    Receives: { "email": "admin@example.com" }
+    """
+    if request.method == "POST":
+        data = request.get_json()
+        email = data.get("email")
+
+        if not email:
+            return jsonify({"error": "Email is required"}), 400
+
+        # Check if the email exists in the database
+        user = User.query.filter_by(email=email).first()
+        if not user or user.role not in ['admin', 'manager']:
+            return jsonify({"error": "Invalid email or account not found."}), 404
+
+        # Create a unique token for the user
+        token = serializer.dumps(email, salt='password-reset-salt')
+        reset_url = url_for('user_routes.reset_password', token=token, _external=True)
+
+        # Send the reset email
+        try:
+            msg = Message(subject="Reset Your Password",
+                          sender=current_app.config['MAIL_DEFAULT_SENDER'],
+                          recipients=[email],
+                          body=f"Click the link to reset your password: {reset_url}")
+            mail.send(msg)
+            current_app.logger.info(f"Password reset email sent to {email}")
+            return jsonify({"message": "Password reset email sent successfully."}), 200
+        except Exception as e:
+            current_app.logger.error(f"Error sending reset email to {email}: {e}")
+            return jsonify({"error": "Failed to send the reset email. Please try again later."}), 500
+    return render_template('pages/forgot_password.html')
+
+@user_routes.route('/reset_password/<token>', methods=['GET','POST'])
+def reset_password(token):
+    """
+    Admin reset password API to update the password.
+    Receives: { "new_password": "newpassword", "confirm_password": "newpassword" }
+    """
+    if request.method == "POST":
+        data = request.get_json()
+        new_password = data.get("new_password")
+        confirm_password = data.get("confirm_password")
+
+        if not new_password or not confirm_password:
+            return jsonify({"error": "Both new_password and confirm_password are required"}), 400
+
+        if new_password != confirm_password:
+            return jsonify({"error": "Passwords do not match"}), 400
+
+        try:
+            # Validate the token
+            email = serializer.loads(token, salt="password-reset-salt", max_age=3600)  # 1 hour expiration
+        except SignatureExpired:
+            return jsonify({"error": "The reset password link has expired. Please try again."}), 400
+        except BadSignature:
+            return jsonify({"error": "Invalid reset token."}), 400
+
+        # Find the user by email
+        user = User.query.filter_by(email=email).first()
+        if not user:
+            return jsonify({"error": "User not found."}), 404
+
+        # Update the password
+        try:
+            user.set_password(new_password)
+            db.session.commit()
+            current_app.logger.info(f"Password reset successfully for {email}")
+            return jsonify({"message": "Password reset successfully."}), 200
+        except Exception as e:
+            db.session.rollback()
+            current_app.logger.error(f"Failed to reset password for {email}: {e}")
+            return jsonify({"error": "Failed to reset password. Please try again later."}), 500
+    return render_template('pages/reset_password.html')
+
+@user_routes.route('/admin/dashboard', methods=['GET'])
+@login_required
+@role_required(['admin', 'manager'])
+def admin_dashboard():
+    """Admin dashboard route."""
+    return render_template('pages/index.html', user=current_user)
 
 
-@user_routes.route('/admin_profile', methods=['GET', 'POST'])
+@user_routes.route('/admin/profile', methods=['GET', 'POST'])
 @login_required
 def admin_profile():
     """Admin profile route."""
@@ -160,6 +228,7 @@ def admin_profile():
 
     if request.method == 'POST':
         print('Form data:', request.form.to_dict())  # Debugging
+
 
         user.firstname = request.form.get('firstname', '').strip()
         user.lastname = request.form.get('lastname', '').strip()
@@ -183,7 +252,8 @@ def admin_profile():
             if file and allowed_file(file.filename):
                 filename = secure_filename(file.filename)
                 unique_filename = f"{uuid.uuid4().hex}_{filename}"  # Generate a unique name
-                file_path = os.path.join(current_app.config[UPLOAD_FOLDER], unique_filename)
+                file_path = os.path.join(CurrentConfig.UPLOAD_FOLDER, unique_filename)
+                #file_path = os.path.join(current_app.Config[UPLOAD_FOLDER] , unique_filename)
                 file.save(file_path)
                 user.profile_image = unique_filename  # Save filename in DB
 
@@ -191,10 +261,9 @@ def admin_profile():
         flash("Profile updated successfully!", "success")
         return redirect(url_for('user_routes.admin_profile'))
 
-    return render_template('profile.html', user=user)
+    return render_template('pages/profile.html', user=user)
 
-
-@user_routes.route('/admin_change_password', methods=['GET', 'POST'])
+@user_routes.route('/admin/change_password', methods=['GET', 'POST'])
 @login_required
 def admin_change_password():
     """Admin change password route."""
@@ -216,8 +285,7 @@ def admin_change_password():
         flash('Your password has been updated!', 'success')
         return redirect(url_for('user_routes.admin_dashboard'))
 
-    return render_template('profile.html')
-
+    return render_template('pages/profile.html')
 
 @user_routes.route('/admin/logout', methods=['POST'])
 @login_required
@@ -228,122 +296,196 @@ def admin_logout():
     return redirect(url_for('user_routes.admin_login'))
 
 
-@user_routes.route('/admin/dashboard', methods=['GET'])
-@login_required
-def admin_dashboard():
-    """Admin dashboard route."""
-    if current_user.role not in ['admin', 'manager']:
-        flash("Access denied.", "danger")
-        return redirect(url_for('user_routes.admin_login'))
-
-    return render_template('index.html', user=current_user)
-
-
 # ============================
 # React API Routes
 # ============================
 
-@user_routes.route('api/users/login', methods=['POST'])
-def login():
+@user_routes.route('/api/users/login', methods=['POST'])
+def api_login():
     """React frontend login: Returns a JWT."""
     data = request.get_json()
     email = data.get('email')
     password = data.get('password')
 
-    # Authenticate user
     user = User.query.filter_by(email=email).first()
     if user and user.check_password(password):
-        # Create a JWT with user details
         access_token = create_access_token(identity={"id": user.id, "role": user.role})
-        return jsonify({"access_token": access_token, "firstname": user.firstname, "email": user.email}), 200
+        current_app.logger.info(f"User {email} logged in via API.")
+        return jsonify({"access_token": access_token, "id": user.id, "role": user.role}), 200
 
+    current_app.logger.warning(f"Failed API login attempt for: {email}")
     return jsonify({"error": "Invalid credentials"}), 401
 
 
-@user_routes.route('api/users/protected', methods=['GET'])
-@jwt_required()
-def protected():
-    """Protected API route example."""
-    current_user = get_jwt_identity()
-    return jsonify({"message": f"Hello, {current_user['id']}!"}), 200
-
-
-@user_routes.route('api/users/list_users', methods=['GET'])
-def get_users():
-    """List all users."""
-    users = User.query.all()
-    return jsonify([{"id": u.id, "name": u.firstname, "email": u.email} for u in users])
-
-
-@user_routes.route('api/users/get_one_user/<int:user_id>', methods=['GET'])
-def get_user(user_id):
-    """Get a specific user by ID."""
-    user = User.query.get(user_id)
-    if not user:
-        return jsonify({"error": "User not found"}), 404
-    return jsonify({"id": user.id, "name": user.firstname, "email": user.email})
-
-
-@user_routes.route('api/users/create_user', methods=['POST'])
+@user_routes.route('/api/users/create', methods=['POST'])
 def create_user():
     """Create a new user for React frontend."""
     data = request.get_json()
-
-    # Validate required fields
-    required_fields = ['firstname', 'lastname', 'email', 'contact_no', 'password']
+    required_fields = ['firstname', 'lastname', 'email', 'password', 'role']
     for field in required_fields:
         if not data.get(field):
             return jsonify({"error": f"{field} is required"}), 400
 
-    # Validate role
-    role = data.get('role', 'guest')
-    if role not in ['admin', 'manager', 'guest']:
-        return jsonify({"error": "Invalid role provided"}), 400
+    if not validate_role(data['role'], allowed_roles=['admin', 'manager', 'guest']):
+        return jsonify({"error": "Invalid role"}), 400
 
-    # Create the new user
     new_user = User(
         firstname=data['firstname'],
         lastname=data['lastname'],
         email=data['email'],
-        contact_no=data['contact_no'],
-        address=data.get('address'),
-        city=data.get('city'),
-        country=data.get('country'),
-        pincode=data.get('pincode'),
-        role=role,
-        business_area=data.get('business_area', 'Information technology'),
-        ERP=data.get('ERP', 'SAP'),
-        other_ques_comments=data.get('other_ques_comments')
+        role=data['role']
     )
     new_user.set_password(data['password'])
 
-    db.session.add(new_user)
-    db.session.commit()
-    return jsonify({"message": "User created successfully", "id": new_user.id}), 201
+    try:
+        db.session.add(new_user)
+        db.session.commit()
+        current_app.logger.info(f"New user created via API: {data['email']}")
+        return jsonify({"message": "User created successfully", "id": new_user.id}), 201
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.error(f"Error creating API user: {e}")
+        return jsonify({"error": "Failed to create user"}), 500
 
-
-@user_routes.route('api/users/update_user/<int:user_id>', methods=['PUT'])
-def update_user(user_id):
-    """Update an existing user."""
-    user = User.query.get(user_id)
-    if not user:
-        return jsonify({"error": "User not found"}), 404
-
+@user_routes.route('/api/users/forgot_password', methods=['POST'])
+def react_forgot_password():
+    """
+    React forgot password API to send a reset password email.
+    Receives: { "email": "user@example.com" }
+    """
     data = request.get_json()
-    user.firstname = data.get('firstname', user.firstname)
-    user.email = data.get('email', user.email)
-    db.session.commit()
+    email = data.get("email")
 
-    return jsonify({"id": user.id, "firstname": user.firstname, "email": user.email})
+    if not email:
+        return jsonify({"error": "Email is required"}), 400
+
+    user = User.query.filter_by(email=email).first()
+    if not user:
+        return jsonify({"error": "Invalid email or user not found."}), 404
+
+    # Create a token
+    token = serializer.dumps(email, salt='password-reset-salt')
+    reset_url = url_for('user_routes.react_reset_password', token=token, _external=True)
+
+    # Send reset email
+    try:
+        msg = Message(subject="Reset Your Password",
+                      sender=current_app.config['MAIL_DEFAULT_SENDER'],
+                      recipients=[email],
+                      body=f"Click this link to reset your password: {reset_url}")
+        mail.send(msg)
+        current_app.logger.info(f"Password reset email sent to {email}")
+        return jsonify({"message": "Password reset email sent successfully."}), 200
+    except Exception as e:
+        current_app.logger.error(f"Error sending reset email to {email}: {e}")
+        return jsonify({"error": "Failed to send the reset email. Please try again later."}), 500
 
 
-@user_routes.route('api/users/del_user/<int:user_id>', methods=['DELETE'])
-def delete_user(user_id):
-    """Delete a user."""
+@user_routes.route('/api/users/reset_password/<token>', methods=['POST'])
+def react_reset_password(token):
+    """
+    React reset password API to update password.
+    Receives: { "new_password": "newpassword", "confirm_password": "newpassword" }
+    """
+    data = request.get_json()
+    new_password = data.get("new_password")
+    confirm_password = data.get("confirm_password")
+
+    if not new_password or not confirm_password:
+        return jsonify({"error": "Both new_password and confirm_password are required"}), 400
+
+    if new_password != confirm_password:
+        return jsonify({"error": "Passwords do not match"}), 400
+
+    try:
+        email = serializer.loads(token, salt="password-reset-salt", max_age=3600)  # 1 hour expiration
+    except SignatureExpired:
+        return jsonify({"error": "The reset password link has expired."}), 400
+    except BadSignature:
+        return jsonify({"error": "Invalid reset token."}), 400
+
+    user = User.query.filter_by(email=email).first()
+    if not user:
+        return jsonify({"error": "User not found."}), 404
+
+    try:
+        user.set_password(new_password)
+        db.session.commit()
+        current_app.logger.info(f"User password reset successfully: {email}")
+        return jsonify({"message": "Password reset successful."}), 200
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.error(f"Failed to reset password for {email}: {e}")
+        return jsonify({"error": "Password reset failed. Try again."}), 500
+
+
+# ============================
+# React APIs: Manage Users
+# ============================
+
+@user_routes.route('/api/users/delete/<int:user_id>', methods=['DELETE'])
+@jwt_required()
+def react_delete_user(user_id):
+    """
+    React API to delete a user by ID (Admin only).
+    """
+    current_user_identity = get_jwt_identity()
+    if current_user_identity['role'] != 'admin':
+        return jsonify({"error": "Access denied. Admin privilege required."}), 403
+
     user = User.query.get(user_id)
     if not user:
-        return jsonify({"error": "User not found"}), 404
+        return jsonify({"error": "User not found."}), 404
 
-    db.session.delete(user)
-    db.session.commit()
-    return jsonify({"message": "User deleted successfully"})
+    try:
+        db.session.delete(user)
+        db.session.commit()
+        current_app.logger.info(f"User deleted successfully: {user.email}")
+        return jsonify({"message": "User deleted successfully."}), 200
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.error(f"Failed to delete user {user.email}: {e}")
+        return jsonify({"error": "Failed to delete user. Try again."}), 500
+
+
+@user_routes.route('/api/users/edit/<int:user_id>', methods=['PUT'])
+@jwt_required()
+def react_edit_user(user_id):
+    """
+    React API to edit an existing user by ID.
+    Expects: {
+        "firstname": "NewName",
+        "lastname": "NewLast",
+        "role": "manager"
+    }
+    """
+    data = request.get_json()
+    current_user_identity = get_jwt_identity()
+    if current_user_identity['role'] != 'admin':
+        return jsonify({"error": "Access denied. Admin privilege required."}), 403
+
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({"error": "User not found."}), 404
+
+    # Update user fields
+    firstname = data.get("firstname", user.firstname)
+    lastname = data.get("lastname", user.lastname)
+    role = data.get("role", user.role)
+
+    if role and not validate_role(role):
+        return jsonify({"error": "Invalid role."}), 400
+
+    user.firstname = firstname
+    user.lastname = lastname
+    user.role = role
+
+    try:
+        db.session.commit()
+        current_app.logger.info(f"User updated successfully: {user.email}")
+        return jsonify({"message": "User updated successfully."}), 200
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.error(f"Failed to update user {user.email}: {e}")
+        return jsonify({"error": "Failed to update user. Try again."}), 500
+
