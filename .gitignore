@@ -1,8 +1,1 @@
-# Ignore .env
-.env
-
-# Ignore .idea (IDE settings)
-.idea/
-
-# Ignore virtual environments
-.venv/
+/.env

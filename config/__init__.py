@@ -16,4 +16,3 @@ elif ENV == 'testing':
     CurrentConfig = TestingConfig
 else:
     raise ValueError(f"Invalid FLASK_ENV value: {ENV}")
-print(f"✅ Loaded {ENV} configuration")
