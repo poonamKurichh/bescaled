@@ -1,1 +1,15 @@
 /.env
+   # Ignore IDE-specific files
+   .idea/
+
+   # Ignore Python cache files
+   __pycache__/
+
+   # Ignore virtual environment directory
+   .venv/
+
+   # Ignore migrations if not needed in repo
+   migrations/
+
+   # Logs and temporary files
+   *.log
